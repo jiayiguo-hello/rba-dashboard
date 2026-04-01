@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RBA Cash Rate Forecast</title>
+  <meta name="description" content="XGBoost-powered prediction dashboard for RBA cash rate decisions." />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0d1117;
+      --surface:    #161b22;
+      --surface2:   #21262d;
+      --border:     #30363d;
+      --text:       #e6edf3;
+      --muted:      #8b949e;
+      --hold-clr:   #388bfd;
+      --hike-clr:   #f78166;
+      --cut-clr:    #56d364;
+      --accent:     #388bfd;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--surface);
+    }
+    .logo { display: flex; align-items: center; gap: .75rem; }
+    .logo-icon {
+      width: 36px; height: 36px; border-radius: 8px;
+      background: linear-gradient(135deg, #388bfd 0%, #1a6fd4 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.1rem; font-weight: 800; color: #fff;
+    }
+    .logo h1 { font-size: 1rem; font-weight: 700; }
+    .logo p { font-size: .72rem; color: var(--muted); margin-top: 1px; }
+    .last-updated { font-size: .75rem; color: var(--muted); }
+
+    /* ── Layout ── */
+    main { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+    /* ── Loading / Error ── */
+    #loading-msg { text-align:center; color: var(--muted); padding: 4rem; font-size: 1rem; }
+    #error-msg   { display:none; text-align:center; color: var(--hike-clr); padding: 4rem; font-size: .95rem; }
+
+    /* ── Section titles ── */
+    .section-title {
+      font-size: .72rem; font-weight: 600; letter-spacing: .08em;
+      text-transform: uppercase; color: var(--muted);
+      margin-bottom: 1rem;
+    }
+
+    /* ── Hero ── */
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    @media (max-width: 680px) { .hero-grid { grid-template-columns: 1fr; } }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+    }
+
+    /* next meeting card */
+    .next-card { position: relative; overflow: hidden; }
+    .next-card::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: radial-gradient(ellipse at top left, rgba(56,139,253,.12) 0%, transparent 60%);
+      pointer-events: none;
+    }
+    .next-label { font-size: .72rem; color: var(--muted); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; margin-bottom: .5rem; }
+    .next-decision {
+      font-size: 3.5rem; font-weight: 800; line-height: 1;
+      margin-bottom: .25rem;
+    }
+    .next-decision.hold { color: var(--hold-clr); }
+    .next-decision.hike { color: var(--hike-clr); }
+    .next-decision.cut  { color: var(--cut-clr);  }
+
+    .next-confidence { font-size: .85rem; color: var(--muted); margin-bottom: 1.5rem; }
+
+    /* probability bars */
+    .prob-bars { display: flex; flex-direction: column; gap: .55rem; }
+    .prob-row { display: flex; align-items: center; gap: .75rem; }
+    .prob-label { font-size: .8rem; width: 36px; font-weight: 600; color: var(--muted); }
+    .prob-track {
+      flex: 1; height: 8px; background: var(--surface2);
+      border-radius: 99px; overflow: hidden;
+    }
+    .prob-fill { height: 100%; border-radius: 99px; transition: width .6s ease; }
+    .prob-fill.hold { background: var(--hold-clr); }
+    .prob-fill.hike { background: var(--hike-clr); }
+    .prob-fill.cut  { background: var(--cut-clr);  }
+    .prob-pct { font-size: .8rem; font-weight: 700; width: 44px; text-align: right; }
+    .prob-pct.hold { color: var(--hold-clr); }
+    .prob-pct.hike { color: var(--hike-clr); }
+    .prob-pct.cut  { color: var(--cut-clr);  }
+
+    /* doughnut card */
+    .donut-card { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .donut-wrap { position: relative; width: 190px; height: 190px; margin-bottom: 1rem; }
+    .donut-center {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      pointer-events: none;
+    }
+    .donut-center .d-val { font-size: 1.5rem; font-weight: 800; }
+    .donut-center .d-sub { font-size: .65rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+    .donut-legend { display: flex; gap: 1rem; font-size: .78rem; }
+    .legend-item { display: flex; align-items: center; gap: .4rem; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+    /* ── Accuracy pill ── */
+    .stats-row {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .stat-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 1rem 1.25rem;
+    }
+    .stat-card .sv { font-size: 1.8rem; font-weight: 800; }
+    .stat-card .sl { font-size: .75rem; color: var(--muted); margin-top: 2px; }
+
+    /* ── Table ── */
+    .table-card { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+    thead th {
+      text-align: left; padding: .65rem .85rem;
+      font-size: .72rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    tbody tr { border-bottom: 1px solid var(--border); transition: background .15s; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: var(--surface2); }
+    tbody td { padding: .7rem .85rem; vertical-align: middle; }
+    .date-cell { font-variant-numeric: tabular-nums; font-weight: 500; color: var(--text); }
+    .badge {
+      display: inline-block; padding: .2rem .6rem;
+      border-radius: 6px; font-size: .75rem; font-weight: 600;
+    }
+    .badge.hold { background: rgba(56,139,253,.18); color: var(--hold-clr); }
+    .badge.hike { background: rgba(247,129,102,.18); color: var(--hike-clr); }
+    .badge.cut  { background: rgba(86,211,100,.18);  color: var(--cut-clr);  }
+    .badge.future { background: rgba(139,148,158,.15); color: var(--muted); }
+    .result-icon { font-size: 1.1rem; }
+
+    /* hidden until data loads */
+    #dashboard { display: none; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">R</div>
+    <div>
+      <h1>RBA Prediction Dashboard</h1>
+      <p>XGBoost Cash Rate Forecast · Australia</p>
+    </div>
+  </div>
+  <div class="last-updated" id="last-updated">—</div>
+</header>
+
+<main>
+  <div id="loading-msg">⏳ Loading predictions…</div>
+  <div id="error-msg">
+    ❌ No data found.<br><br>
+    Please wait for the script to finish running. It will inject the data into this file.
+  </div>
+
+  <div id="dashboard">
+    <!-- Hero -->
+    <p class="section-title" id="hero-label">Most Recent Meeting</p>
+    <div class="hero-grid">
+      <div class="card next-card">
+        <div class="next-label" id="next-date-label">XGBoost Prediction</div>
+        <div class="next-decision" id="next-decision">—</div>
+        <div class="next-confidence" id="next-confidence">—</div>
+        <div class="prob-bars">
+          <div class="prob-row">
+            <span class="prob-label">Hold</span>
+            <div class="prob-track"><div class="prob-fill hold" id="bar-hold" style="width:0%"></div></div>
+            <span class="prob-pct hold" id="pct-hold">—</span>
+          </div>
+          <div class="prob-row">
+            <span class="prob-label">Hike</span>
+            <div class="prob-track"><div class="prob-fill hike" id="bar-hike" style="width:0%"></div></div>
+            <span class="prob-pct hike" id="pct-hike">—</span>
+          </div>
+          <div class="prob-row">
+            <span class="prob-label">Cut</span>
+            <div class="prob-track"><div class="prob-fill cut" id="bar-cut" style="width:0%"></div></div>
+            <span class="prob-pct cut" id="pct-cut">—</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card donut-card">
+        <p class="section-title" style="margin-bottom:.75rem">Probability Distribution</p>
+        <div class="donut-wrap">
+          <canvas id="donut-chart"></canvas>
+          <div class="donut-center">
+            <div class="d-val" id="donut-val">—</div>
+            <div class="d-sub">Top pick</div>
+          </div>
+        </div>
+        <div class="donut-legend">
+          <div class="legend-item"><div class="legend-dot" style="background:var(--hold-clr)"></div>Hold</div>
+          <div class="legend-item"><div class="legend-dot" style="background:var(--hike-clr)"></div>Hike</div>
+          <div class="legend-item"><div class="legend-dot" style="background:var(--cut-clr)"></div>Cut</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <p class="section-title">Recent Performance</p>
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="sv" id="stat-accuracy" style="color:var(--hold-clr)">—</div>
+        <div class="sl">Accuracy (last 10)</div>
+      </div>
+      <div class="stat-card">
+        <div class="sv" id="stat-correct">—</div>
+        <div class="sl">Correct Predictions</div>
+      </div>
+      <div class="stat-card">
+        <div class="sv" id="stat-total">—</div>
+        <div class="sl">Meetings Evaluated</div>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <p class="section-title">Recent Meeting Results</p>
+    <div class="card table-card">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Predicted</th>
+            <th>Actual</th>
+            <th>Rate</th>
+            <th>P(Hold)</th>
+            <th>P(Hike)</th>
+            <th>P(Cut)</th>
+            <th>Result</th>
+          </tr>
+        </thead>
+        <tbody id="meetings-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+  // ── Config ──────────────────────────────────────────────────────────────
+  // INJECTED PREDICTIONS DATA
+  const INJECTED_DATA = {"generated_at": "2026-03-31T22:07:31Z", "next_meeting_date": "2026-05-06", "accuracy_recent": 0.5, "n_correct": 5, "n_total": 10, "meetings": [{"date": "2025-02-19", "predicted": "Hold", "predicted_idx": 0, "actual": "Cut", "actual_idx": 2, "actual_rate": 4.1, "correct": false, "probabilities": {"Hold": 0.9313, "Hike": 0.023, "Cut": 0.0457}}, {"date": "2025-04-02", "predicted": "Hold", "predicted_idx": 0, "actual": "Hold", "actual_idx": 0, "actual_rate": 4.1, "correct": true, "probabilities": {"Hold": 0.9256, "Hike": 0.0247, "Cut": 0.0497}}, {"date": "2025-05-21", "predicted": "Hold", "predicted_idx": 0, "actual": "Cut", "actual_idx": 2, "actual_rate": 3.85, "correct": false, "probabilities": {"Hold": 0.9023, "Hike": 0.0132, "Cut": 0.0845}}, {"date": "2025-07-09", "predicted": "Hold", "predicted_idx": 0, "actual": "Hold", "actual_idx": 0, "actual_rate": 3.85, "correct": true, "probabilities": {"Hold": 0.9664, "Hike": 0.0131, "Cut": 0.0204}}, {"date": "2025-08-13", "predicted": "Hold", "predicted_idx": 0, "actual": "Cut", "actual_idx": 2, "actual_rate": 3.6, "correct": false, "probabilities": {"Hold": 0.9844, "Hike": 0.0062, "Cut": 0.0094}}, {"date": "2025-10-01", "predicted": "Hold", "predicted_idx": 0, "actual": "Hold", "actual_idx": 0, "actual_rate": 3.6, "correct": true, "probabilities": {"Hold": 0.9785, "Hike": 0.0037, "Cut": 0.0178}}, {"date": "2025-11-05", "predicted": "Hold", "predicted_idx": 0, "actual": "Hold", "actual_idx": 0, "actual_rate": 3.6, "correct": true, "probabilities": {"Hold": 0.8837, "Hike": 0.0546, "Cut": 0.0617}}, {"date": "2025-12-10", "predicted": "Hold", "predicted_idx": 0, "actual": "Hold", "actual_idx": 0, "actual_rate": 3.6, "correct": true, "probabilities": {"Hold": 0.9439, "Hike": 0.0449, "Cut": 0.0112}}, {"date": "2026-02-04", "predicted": "Hold", "predicted_idx": 0, "actual": "Hike", "actual_idx": 1, "actual_rate": 3.85, "correct": false, "probabilities": {"Hold": 0.9655, "Hike": 0.029, "Cut": 0.0055}}, {"date": "2026-03-17", "predicted": "Hold", "predicted_idx": 0, "actual": "Hike", "actual_idx": 1, "actual_rate": 4.1, "correct": false, "probabilities": {"Hold": 0.9275, "Hike": 0.0478, "Cut": 0.0247}}]}; // __JSON_REPLACEMENT_TARGET__
+
+  const COLORS = {
+    Hold: getComputedStyle(document.documentElement).getPropertyValue('--hold-clr').trim() || '#388bfd',
+    Hike: getComputedStyle(document.documentElement).getPropertyValue('--hike-clr').trim() || '#f78166',
+    Cut:  getComputedStyle(document.documentElement).getPropertyValue('--cut-clr').trim()  || '#56d364',
+  };
+
+  // ── Load JSON ────────────────────────────────────────────────────────────
+  async function loadPredictions() {
+    if (INJECTED_DATA) {
+      return INJECTED_DATA;
+    }
+    throw new Error("No data injected into this file.");
+  }
+
+
+  // ── Render ───────────────────────────────────────────────────────────────
+  let donutChart = null;
+
+  function renderDashboard(data) {
+    // Header timestamp
+    const gen = new Date(data.generated_at);
+    document.getElementById("last-updated").textContent =
+      "Updated " + gen.toLocaleString("en-AU", { timeZone: "Australia/Melbourne", dateStyle: "medium", timeStyle: "short" });
+
+    // Most recent historical meeting for hero card
+    const recent = data.meetings[data.meetings.length - 1];
+    const p = recent.probabilities;
+    const pred = recent.predicted;
+    const actualText = recent.actual_rate !== null ? `${recent.actual} (${recent.actual_rate.toFixed(2)}%)` : recent.actual;
+
+    // Date label
+    document.getElementById("next-date-label").textContent =
+      `Meeting: ${recent.date}  ·  Actual: ${actualText}`;
+
+    // Show next upcoming meeting if provided
+    if (data.next_meeting_date) {
+      document.getElementById("hero-label").textContent =
+        `Most Recent Meeting  ·  Next: ${data.next_meeting_date}`;
+    }
+
+    // Big decision (predicted)
+    const decEl = document.getElementById("next-decision");
+    decEl.textContent = pred.toUpperCase();
+    decEl.className   = "next-decision " + pred.toLowerCase();
+
+    document.getElementById("next-confidence").textContent =
+      `${(p[pred] * 100).toFixed(1)}% model confidence  ·  Actual was: ${recent.actual}`;
+    Object.entries({ hold: "Hold", hike: "Hike", cut: "Cut" }).forEach(([cls, key]) => {
+      const pct = (p[key] * 100).toFixed(1);
+      document.getElementById(`bar-${cls}`).style.width = pct + "%";
+      document.getElementById(`pct-${cls}`).textContent  = pct + "%";
+    });
+
+    // Donut
+    const ctx = document.getElementById("donut-chart").getContext("2d");
+    if (donutChart) donutChart.destroy();
+    donutChart = new Chart(ctx, {
+      type: "doughnut",
+      data: {
+        labels: ["Hold", "Hike", "Cut"],
+        datasets: [{
+          data: [p.Hold, p.Hike, p.Cut],
+          backgroundColor: [COLORS.Hold, COLORS.Hike, COLORS.Cut],
+          borderColor: "#161b22",
+          borderWidth: 3,
+          hoverOffset: 6,
+        }],
+      },
+      options: {
+        cutout: "70%",
+        plugins: { legend: { display: false }, tooltip: {
+          callbacks: {
+            label: ctx => ` ${(ctx.raw * 100).toFixed(1)}%`
+          }
+        }},
+        animation: { duration: 800, easing: "easeInOutQuart" },
+      },
+    });
+
+    document.getElementById("donut-val").textContent = (p[pred] * 100).toFixed(0) + "%";
+    document.getElementById("donut-val").style.color = COLORS[pred];
+
+    // Stats
+    document.getElementById("stat-accuracy").textContent = (data.accuracy_recent * 100).toFixed(0) + "%";
+    document.getElementById("stat-correct").textContent  = data.n_correct;
+    document.getElementById("stat-total").textContent    = data.n_total;
+
+    // Table — show history most-recent-first
+    const historical = [...data.meetings].reverse();
+    const tbody = document.getElementById("meetings-tbody");
+    tbody.innerHTML = "";
+
+    historical.forEach(m => {
+      const tr = document.createElement("tr");
+      const correct = m.correct;
+      const icon    = correct ? "✅" : "❌";
+      const rateText = m.actual_rate !== null ? m.actual_rate.toFixed(2) + "%" : "—";
+      tr.innerHTML = `
+        <td class="date-cell">${m.date}</td>
+        <td><span class="badge ${m.predicted.toLowerCase()}">${m.predicted}</span></td>
+        <td><span class="badge ${m.actual.toLowerCase()}">${m.actual}</span></td>
+        <td class="date-cell">${rateText}</td>
+        <td style="color:var(--hold-clr);font-weight:600">${(m.probabilities.Hold*100).toFixed(1)}%</td>
+        <td style="color:var(--hike-clr);font-weight:600">${(m.probabilities.Hike*100).toFixed(1)}%</td>
+        <td style="color:var(--cut-clr); font-weight:600">${(m.probabilities.Cut *100).toFixed(1)}%</td>
+        <td class="result-icon">${icon}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  // ── Init ─────────────────────────────────────────────────────────────────
+  (async () => {
+    try {
+      const data = await loadPredictions();
+      document.getElementById("loading-msg").style.display = "none";
+      document.getElementById("dashboard").style.display   = "block";
+      renderDashboard(data);
+    } catch (err) {
+      console.error("Failed to load predictions:", err);
+      document.getElementById("loading-msg").style.display = "none";
+      document.getElementById("error-msg").style.display   = "block";
+    }
+  })();
+</script>
+
+</body>
+</html>
